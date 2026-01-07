@@ -7,14 +7,57 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
+      includeAssets: ['favicon.svg', 'offline.html'],
+      injectRegister: 'auto',
+      strategies: 'injectManifest', // generateSW, injectManifest
+      // srcDir: 'src',
+      // filename: 'sw.ts',
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2,json}'],
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'google-fonts-cache',
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
+          },
+          {
+            urlPattern: /\.(?:js|css)$/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'static-resources',
+            },
+          },
+          {
+            urlPattern: /\.(?:png|jpg|jpeg|svg|gif|ico)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'images',
+              expiration: {
+                maxEntries: 50,
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+            },
+          },
+        ],
+        navigateFallback: '/offline.html',
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
+        sourcemap: false,
+      },
       manifest: {
         name: 'Offline PWA App',
         short_name: 'OfflinePWA',
         start_url: '/',
         display: 'standalone',
         background_color: '#ffffff',
-        theme_color: '#1976d2',
+        theme_color: '#d21938ff',
         icons: [
           {
             src: 'pwa-192x192.png',
@@ -30,4 +73,12 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
+      },
+    },
+  },
 });
