@@ -22,16 +22,16 @@ export default defineConfig({
               cacheName: 'google-fonts-cache',
               expiration: {
                 maxEntries: 10,
-                maxAgeSeconds: 60 * 60 * 24 * 365
-              }
-            }
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
           },
           {
             urlPattern: /\.(?:js|css)$/,
             handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'static-resources',
-            }
+            },
           },
           {
             urlPattern: /\.(?:png|jpg|jpeg|svg|gif|ico)$/,
@@ -40,16 +40,16 @@ export default defineConfig({
               cacheName: 'images',
               expiration: {
                 maxEntries: 50,
-                maxAgeSeconds: 60 * 60 * 24 * 30
-              }
-            }
-          }
+                maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+            },
+          },
         ],
         navigateFallback: '/offline.html',
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
-        sourcemap: false
+        sourcemap: false,
       },
       manifest: {
         name: 'Offline PWA App',
@@ -73,7 +73,7 @@ export default defineConfig({
       },
     }),
   ],
-    build: {
+  build: {
     sourcemap: false,
     rollupOptions: {
       output: {
