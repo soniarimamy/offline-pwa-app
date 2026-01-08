@@ -1,168 +1,27 @@
 /// <reference lib="webworker" />
 
-import { precacheAndRoute } from 'workbox-precaching';
-
-const CACHE_NAME = 'offline-pwa-cache-v1';
-
-// Assets avec chemins relatifs seulement
-const STATIC_ASSETS = [
-  './',
-  './index.html',
-  './offline.html',
-  './manifest.json',
-  './pwa-192x192.png',
-  './pwa-512x512.png',
-  './favicon.ico',
-  // Ne pas inclure les chemins comme /css/main.css qui sont générés dynamiquement
-];
-
-// Utilisation du manifeste de Workbox pour le precaching
-precacheAndRoute(self.__WB_MANIFEST);
+const CACHE_NAME = 'offline-pwa-cache-v3';
+const SYNC_QUEUE_KEY = 'sync-queue';
 
 self.addEventListener('install', (event) => {
   console.log('[Service Worker] Installation');
-
-  event.waitUntil(
-    (async () => {
-      try {
-        // Skip waiting pour activation immédiate
-        await self.skipWaiting();
-        console.log('[Service Worker] skipWaiting effectué');
-
-        // Ouvrir le cache
-        const cache = await caches.open(CACHE_NAME);
-        console.log('[Service Worker] Cache ouvert:', CACHE_NAME);
-
-        // Mettre en cache les assets essentiels avec retry
-        console.log('[Service Worker] Début de la mise en cache des assets');
-
-        for (const asset of STATIC_ASSETS) {
-          await cacheAssetWithRetry(cache, asset, 3); // 3 tentatives
-        }
-
-        console.log('[Service Worker] ✅ Installation terminée');
-      } catch (error) {
-        console.error("[Service Worker] Erreur critique lors de l'installation:", error);
-      }
-    })()
-  );
+  self.skipWaiting();
 });
-
-// Fonction utilitaire pour mettre en cache avec retry
-async function cacheAssetWithRetry(cache, assetPath, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Convertir le chemin relatif en URL absolue
-      const assetUrl = new URL(assetPath, self.location.origin).href;
-
-      console.log(`[Service Worker] Tentative ${attempt}/${maxRetries} pour: ${assetUrl}`);
-
-      // Vérifier si déjà en cache
-      const cached = await cache.match(assetUrl);
-      if (cached) {
-        console.log(`[Service Worker] ⏭️ ${assetPath} déjà en cache`);
-        return true;
-      }
-
-      // Tenter de récupérer l'asset
-      const response = await fetch(assetUrl, {
-        cache: 'no-cache', // Toujours récupérer la dernière version
-        headers: {
-          'Cache-Control': 'no-cache',
-        },
-      });
-
-      if (response.ok) {
-        await cache.put(assetUrl, response);
-        console.log(`[Service Worker] ✅ ${assetPath} mis en cache (tentative ${attempt})`);
-        return true;
-      } else {
-        console.warn(`[Service Worker] ⚠️ ${assetPath} - Status: ${response.status}`);
-      }
-    } catch (error) {
-      console.warn(
-        `[Service Worker] ⚠️ Tentative ${attempt} échouée pour ${assetPath}:`,
-        error.message
-      );
-
-      // Attendre avant de réessayer (backoff exponentiel)
-      if (attempt < maxRetries) {
-        const delay = Math.pow(2, attempt) * 100; // 200ms, 400ms, 800ms...
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  console.error(`[Service Worker] ❌ Échec après ${maxRetries} tentatives pour ${assetPath}`);
-  return false;
-}
 
 self.addEventListener('activate', (event) => {
   console.log('[Service Worker] Activation');
-
-  event.waitUntil(
-    (async () => {
-      try {
-        // NE PAS supprimer tous les caches automatiquement
-        // Garder le cache existant pour le mode offline
-
-        // Vérifier les caches existants
-        const cacheNames = await caches.keys();
-        console.log('[Service Worker] Caches existants:', cacheNames);
-
-        // Supprimer seulement les caches très anciens (optionnel)
-        const cacheDeletions = cacheNames.map((cacheName) => {
-          if (cacheName.startsWith('offline-pwa-cache-') && cacheName !== CACHE_NAME) {
-            console.log("[Service Worker] Suppression de l'ancien cache:", cacheName);
-            return caches.delete(cacheName);
-          }
-        });
-
-        await Promise.all(cacheDeletions);
-
-        // Prendre le contrôle immédiat de toutes les pages
-        await self.clients.claim();
-
-        console.log('[Service Worker] ✅ Activation terminée');
-
-        // Vérifier l'état du cache après activation
-        await checkCacheState();
-      } catch (error) {
-        console.error("[Service Worker] Erreur lors de l'activation:", error);
-      }
-    })()
-  );
+  event.waitUntil(clients.claim());
 });
-
-async function checkCacheState() {
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    const keys = await cache.keys();
-    console.log(`[Service Worker] 📦 Cache contient ${keys.length} éléments:`);
-    keys.forEach((request) => {
-      console.log(`  - ${request.url}`);
-    });
-  } catch (error) {
-    console.error('[Service Worker] Erreur vérification cache:', error);
-  }
-}
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Ignorer les requêtes non-GET
   if (event.request.method !== 'GET') return;
 
-  // Ignorer certaines requêtes
-  if (
-    url.protocol === 'chrome-extension:' ||
-    url.hostname.includes('google-analytics') ||
-    url.hostname.includes('googletagmanager')
-  ) {
+  if (url.protocol === 'chrome-extension:' || url.hostname.includes('google-analytics')) {
     return;
   }
 
-  // Stratégie différente selon le type de ressource
   event.respondWith(handleFetch(event));
 });
 
@@ -170,22 +29,18 @@ async function handleFetch(event) {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Pour les assets statiques: Cache First
   if (isStaticAsset(url)) {
     return cacheFirstStrategy(request);
   }
 
-  // Pour les pages HTML: Network First avec fallback cache
   if (request.mode === 'navigate') {
     return networkFirstStrategy(request);
   }
 
-  // Pour les API: Network Only (pas de cache)
   if (url.pathname.startsWith('/api/')) {
-    return networkOnlyStrategy(request);
+    return apiStrategy(request);
   }
 
-  // Par défaut: Cache First
   return cacheFirstStrategy(request);
 }
 
@@ -199,32 +54,24 @@ function isStaticAsset(url) {
 
 async function cacheFirstStrategy(request) {
   try {
-    // 1. Chercher dans le cache
     const cachedResponse = await caches.match(request);
     if (cachedResponse) {
-      console.log(`[Service Worker] 📦 Cache hit: ${request.url}`);
+      console.log(`[Service Worker] Cache hit: ${request.url}`);
       return cachedResponse;
     }
 
-    // 2. Si pas en cache, fetch depuis le réseau
-    console.log(`[Service Worker] 🌐 Fetch depuis réseau: ${request.url}`);
+    console.log(`[Service Worker] Fetch from network: ${request.url}`);
     const networkResponse = await fetch(request);
 
-    // 3. Mettre en cache pour plus tard (sauf erreurs)
-    if (networkResponse.ok) {
+    if (networkResponse.ok && request.url.startsWith(self.location.origin)) {
       const cache = await caches.open(CACHE_NAME);
-      // Vérifier que c'est une ressource de notre origine
-      if (request.url.startsWith(self.location.origin)) {
-        cache.put(request, networkResponse.clone());
-        console.log(`[Service Worker] ✅ Mis en cache: ${request.url}`);
-      }
+      cache.put(request, networkResponse.clone());
     }
 
     return networkResponse;
   } catch (error) {
-    console.log(`[Service Worker] ❌ Fetch échoué: ${request.url}`, error);
+    console.log(`[Service Worker] Fetch failed: ${request.url}`, error);
 
-    // Fallback selon le type de ressource
     if (request.destination === 'image') {
       return getImagePlaceholder();
     }
@@ -233,7 +80,7 @@ async function cacheFirstStrategy(request) {
       return getOfflinePage();
     }
 
-    return new Response('Ressource non disponible hors ligne', {
+    return new Response('Resource unavailable offline', {
       status: 503,
       headers: { 'Content-Type': 'text/plain' },
     });
@@ -242,11 +89,8 @@ async function cacheFirstStrategy(request) {
 
 async function networkFirstStrategy(request) {
   try {
-    // 1. Essayer d'abord le réseau
-    console.log(`[Service Worker] 🌐 Network first pour: ${request.url}`);
     const networkResponse = await fetch(request);
 
-    // Mettre à jour le cache
     if (networkResponse.ok) {
       const cache = await caches.open(CACHE_NAME);
       cache.put(request, networkResponse.clone());
@@ -254,28 +98,27 @@ async function networkFirstStrategy(request) {
 
     return networkResponse;
   } catch (error) {
-    console.log(`[Service Worker] 📦 Fallback au cache pour: ${request.url}`);
-
-    // 2. Si échec réseau, chercher dans le cache
     const cachedResponse = await caches.match(request);
     if (cachedResponse) {
       return cachedResponse;
     }
 
-    // 3. Sinon, page offline
     return getOfflinePage();
   }
 }
 
-async function networkOnlyStrategy(request) {
+async function apiStrategy(request) {
+  if (request.method === 'POST') {
+    return handleApiPost(request);
+  }
+
   try {
     return await fetch(request);
   } catch (error) {
-    console.log(`[Service Worker] ❌ API hors ligne: ${request.url}`);
     return new Response(
       JSON.stringify({
         error: 'offline',
-        message: 'Service indisponible en mode hors ligne',
+        message: 'Service unavailable offline',
         timestamp: new Date().toISOString(),
       }),
       {
@@ -285,6 +128,183 @@ async function networkOnlyStrategy(request) {
     );
   }
 }
+
+async function handleApiPost(request) {
+  try {
+    return await fetch(request);
+  } catch (error) {
+    console.log('[Service Worker] API offline, storing for sync');
+
+    const requestClone = request.clone();
+    const requestData = await requestClone.json();
+    const requestUrl = request.url;
+
+    storePendingSync(requestUrl, requestData);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        offline: true,
+        message: 'Data stored locally for synchronization',
+        data: requestData,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  }
+}
+
+function storePendingSync(url, data) {
+  const pendingSyncs = getPendingSyncs();
+  const syncItem = {
+    id: Date.now().toString(),
+    url: url,
+    data: data,
+    timestamp: new Date().toISOString(),
+    attempts: 0,
+  };
+
+  pendingSyncs.push(syncItem);
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(pendingSyncs));
+
+  if ('sync' in self.registration) {
+    self.registration.sync
+      .register('sync-pending-data')
+      .then(() => console.log('[Service Worker] Background sync registered'))
+      .catch((err) => console.error('[Service Worker] Sync registration failed:', err));
+  }
+
+  showNotification('Data stored offline', 'Will sync when back online');
+}
+
+function getPendingSyncs() {
+  return JSON.parse(localStorage.getItem(SYNC_QUEUE_KEY) || '[]');
+}
+
+function removePendingSync(id) {
+  const pendingSyncs = getPendingSyncs();
+  const filtered = pendingSyncs.filter((item) => item.id !== id);
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(filtered));
+}
+
+self.addEventListener('sync', (event) => {
+  console.log('[Service Worker] Sync event:', event.tag);
+
+  if (event.tag === 'sync-pending-data') {
+    event.waitUntil(syncPendingData());
+  }
+});
+
+async function syncPendingData() {
+  console.log('[Service Worker] Starting background sync');
+
+  const pendingSyncs = getPendingSyncs();
+  if (pendingSyncs.length === 0) {
+    console.log('[Service Worker] No data to sync');
+    return;
+  }
+
+  let syncedCount = 0;
+
+  for (const syncItem of pendingSyncs) {
+    try {
+      const response = await fetch(syncItem.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(syncItem.data),
+      });
+
+      if (response.ok) {
+        removePendingSync(syncItem.id);
+        syncedCount++;
+        console.log(`[Service Worker] Synced: ${syncItem.url}`);
+      } else {
+        syncItem.attempts++;
+        if (syncItem.attempts >= 3) {
+          removePendingSync(syncItem.id);
+        }
+      }
+    } catch (error) {
+      console.error(`[Service Worker] Sync error: ${syncItem.url}`, error);
+      syncItem.attempts++;
+    }
+  }
+
+  if (syncedCount > 0) {
+    showNotification('Sync complete', `${syncedCount} items synchronized`);
+
+    self.clients.matchAll().then((clients) => {
+      clients.forEach((client) => {
+        client.postMessage({
+          type: 'SYNC_COMPLETE',
+          count: syncedCount,
+          timestamp: new Date().toISOString(),
+        });
+      });
+    });
+  }
+}
+
+self.addEventListener('message', (event) => {
+  console.log('[Service Worker] Message received:', event.data);
+
+  if (event.data.type === 'GET_PENDING_SYNC_COUNT') {
+    const pendingSyncs = getPendingSyncs();
+    event.ports[0].postMessage({ count: pendingSyncs.length });
+  }
+
+  if (event.data.type === 'TRIGGER_SYNC') {
+    if ('sync' in self.registration) {
+      self.registration.sync
+        .register('sync-pending-data')
+        .then(() => console.log('[Service Worker] Manual sync triggered'))
+        .catch(console.error);
+    }
+  }
+});
+
+function showNotification(title, body) {
+  self.registration.showNotification(title, {
+    body: body,
+    icon: '/pwa-192x192.png',
+    badge: '/pwa-192x192.png',
+    tag: 'sync-notification',
+    data: {
+      url: self.location.origin,
+    },
+    actions: [
+      {
+        action: 'open',
+        title: 'Open',
+      },
+    ],
+  });
+}
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'open') {
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+        for (const client of clientList) {
+          if (client.url === event.notification.data.url && 'focus' in client) {
+            return client.focus();
+          }
+        }
+
+        if (clients.openWindow) {
+          return clients.openWindow(event.notification.data.url);
+        }
+      })
+    );
+  }
+});
 
 function getImagePlaceholder() {
   return new Response(
@@ -303,16 +323,15 @@ async function getOfflinePage() {
       return offlinePage;
     }
   } catch (error) {
-    console.log('[Service Worker] Page offline non trouvée dans le cache');
+    console.log('[Service Worker] Offline page not found in cache');
   }
 
-  // Page offline par défaut
   return new Response(
     `<!DOCTYPE html>
     <html>
     <head>
       <meta charset="utf-8">
-      <title>Hors ligne</title>
+      <title>Offline</title>
       <style>
         body { 
           font-family: Arial, sans-serif; 
@@ -335,9 +354,9 @@ async function getOfflinePage() {
       </style>
     </head>
     <body>
-      <h1>Vous êtes hors ligne</h1>
-      <p>Cette application nécessite une connexion internet.</p>
-      <button onclick="location.reload()">Réessayer la connexion</button>
+      <h1>You are offline</h1>
+      <p>This application requires an internet connection.</p>
+      <button onclick="location.reload()">Retry connection</button>
     </body>
     </html>`,
     {
@@ -345,55 +364,3 @@ async function getOfflinePage() {
     }
   );
 }
-
-// Les autres événements (sync, push, etc.) restent inchangés
-self.addEventListener('sync', (event) => {
-  console.log('[Service Worker] Événement sync:', event.tag);
-  // ...
-});
-
-// Vérification initiale du statut réseau
-self.addEventListener('activate', () => {
-  setTimeout(() => {
-    checkNetworkStatus();
-  }, 1000);
-});
-
-async function checkNetworkStatus() {
-  try {
-    const response = await fetch('/api/health', {
-      method: 'HEAD',
-      cache: 'no-store',
-    });
-
-    broadcastToClients({
-      type: 'NETWORK_STATUS',
-      status: response.ok ? 'online' : 'offline',
-      timestamp: new Date().toISOString(),
-    });
-  } catch {
-    broadcastToClients({
-      type: 'NETWORK_STATUS',
-      status: 'offline',
-      timestamp: new Date().toISOString(),
-    });
-  }
-}
-
-function broadcastToClients(message) {
-  self.clients.matchAll().then((clients) => {
-    clients.forEach((client) => {
-      try {
-        client.postMessage(message);
-      } catch (error) {
-        console.error("[Service Worker] Erreur lors de l'envoi du message:", error);
-      }
-    });
-  });
-}
-
-// Sauvegarde périodique de l'état du cache
-setInterval(() => {
-  console.log('[Service Worker] Vérification du cache...');
-  checkCacheState();
-}, 30 * 60 * 1000); // Toutes les 30 minutes

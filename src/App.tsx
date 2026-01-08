@@ -1,6 +1,5 @@
 import {
   Snackbar,
-  Alert,
   Button,
   TextField,
   Typography,
@@ -14,6 +13,19 @@ import {
   Box,
   Chip,
   CircularProgress,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  FormControl,
+  FormControlLabel,
+  FormLabel,
+  Radio,
+  RadioGroup,
+  AlertTitle,
+  Alert,
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -22,6 +34,8 @@ import {
   CloudDone as CloudDoneIcon,
   CloudOff as CloudOffIcon,
   Sync as SyncIcon,
+  SyncProblem as SyncProblemIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
 import { useEffect, useState, useRef } from 'react';
 import { DataManager } from './services/dataManager';
@@ -41,19 +55,38 @@ function App() {
   >('info');
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [openConflictDialog, setOpenConflictDialog] = useState(false);
+  const [conflictStrategy, setConflictStrategy] = useState<'server-wins' | 'client-wins'>(
+    'server-wins'
+  );
+  const [showNotificationRequest, setShowNotificationRequest] = useState(false);
 
-  const { online, lastChecked } = useOnlineStatus();
+  const {
+    online,
+    lastChecked,
+    pendingSync,
+    pendingSyncCount,
+    triggerManualSync,
+    requestNotificationPermission,
+  } = useOnlineStatus();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadData();
 
-    // Vérifier périodiquement la connexion et synchroniser
     const syncInterval = setInterval(async () => {
       if (online) {
         await syncPendingData();
       }
-    }, 60000); // Toutes les minutes
+    }, 60000);
+
+    const notificationCheck = async () => {
+      if ('Notification' in window && Notification.permission === 'default') {
+        setShowNotificationRequest(true);
+      }
+    };
+
+    notificationCheck();
 
     return () => clearInterval(syncInterval);
   }, [online]);
@@ -69,12 +102,12 @@ function App() {
       setPdfs(pdfsResult.pdfs);
 
       if (messagesResult.source === 'api' || pdfsResult.source === 'api') {
-        showMessage('Données chargées depuis le serveur', 'success');
+        showMessage('Data loaded from server', 'success');
       } else {
-        showMessage('Mode hors ligne - données locales', 'warning');
+        showMessage('Offline mode - local data', 'warning');
       }
     } catch (error) {
-      showMessage('Erreur lors du chargement des données', 'error');
+      showMessage('Error loading data', 'error');
     }
   };
 
@@ -86,7 +119,7 @@ function App() {
 
   const handleSaveMessage = async () => {
     if (!text.trim()) {
-      showMessage('Veuillez entrer un message', 'warning');
+      showMessage('Please enter a message', 'warning');
       return;
     }
 
@@ -97,14 +130,15 @@ function App() {
       setMessages((prev) => [result.local, ...prev]);
       setText('');
 
-      showMessage(
-        result.online
-          ? 'Message sauvegardé en ligne'
-          : 'Message sauvegardé localement (hors ligne)',
-        result.online ? 'success' : 'info'
-      );
+      if (result.online) {
+        showMessage('Message saved online', 'success');
+        showNotification('Message saved', 'Your message has been saved to the server');
+      } else {
+        showMessage('Message saved locally (offline)', 'info');
+        showNotification('Message saved offline', 'Will sync when back online');
+      }
     } catch (error) {
-      showMessage('Erreur lors de la sauvegarde du message', 'error');
+      showMessage('Error saving message', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -114,19 +148,17 @@ function App() {
     const file = event.target.files?.[0];
     if (file) {
       if (file.type !== 'application/pdf') {
-        showMessage('Veuillez sélectionner un fichier PDF', 'warning');
+        showMessage('Please select a PDF file', 'warning');
         return;
       }
 
       if (file.size > 10 * 1024 * 1024) {
-        // 10MB limit
-        showMessage('Le fichier est trop volumineux (max 10MB)', 'warning');
+        showMessage('File is too large (max 10MB)', 'warning');
         return;
       }
 
       setPdfFile(file);
 
-      // Créer un aperçu
       const reader = new FileReader();
       reader.onload = (e) => {
         setPdfPreview({
@@ -144,7 +176,7 @@ function App() {
 
   const handleUploadPDF = async () => {
     if (!pdfFile) {
-      showMessage('Veuillez sélectionner un fichier PDF', 'warning');
+      showMessage('Please select a PDF file', 'warning');
       return;
     }
 
@@ -159,12 +191,15 @@ function App() {
         fileInputRef.current.value = '';
       }
 
-      showMessage(
-        result.online ? 'PDF téléversé avec succès' : 'PDF sauvegardé localement (hors ligne)',
-        result.online ? 'success' : 'info'
-      );
+      if (result.online) {
+        showMessage('PDF uploaded successfully', 'success');
+        showNotification('PDF uploaded', 'Your PDF has been uploaded to the server');
+      } else {
+        showMessage('PDF saved locally (offline)', 'info');
+        showNotification('PDF saved offline', 'Will sync when back online');
+      }
     } catch (error) {
-      showMessage('Erreur lors du téléversement du PDF', 'error');
+      showMessage('Error uploading PDF', 'error');
     } finally {
       setIsSaving(false);
     }
@@ -172,11 +207,10 @@ function App() {
 
   const handleDeletePDF = async (id: string) => {
     try {
-      // Dans un cas réel, vous devriez aussi supprimer de l'API
       setPdfs((prev) => prev.filter((pdf) => pdf.id !== id));
-      showMessage('PDF supprimé', 'info');
+      showMessage('PDF deleted', 'info');
     } catch (error) {
-      showMessage('Erreur lors de la suppression', 'error');
+      showMessage('Error deleting', 'error');
     }
   };
 
@@ -186,19 +220,18 @@ function App() {
       const result = await DataManager.syncPendingData();
 
       if (result.messagesSynced > 0 || result.pdfsSynced > 0) {
-        showMessage(
-          `Synchronisé: ${result.messagesSynced} messages, ${result.pdfsSynced} PDFs`,
-          'success'
-        );
-        // Recharger les données
+        const message = `Synced: ${result.messagesSynced} messages, ${result.pdfsSynced} PDFs`;
+        showMessage(message, 'success');
+        showNotification('Sync complete', message);
         await loadData();
       }
 
       if (result.errors.length > 0) {
-        console.error('Erreurs de synchronisation:', result.errors);
+        console.error('Sync errors:', result.errors);
+        showMessage(`${result.errors.length} sync errors`, 'warning');
       }
     } catch (error) {
-      showMessage('Erreur lors de la synchronisation', 'error');
+      showMessage('Error during sync', 'error');
     } finally {
       setIsSyncing(false);
     }
@@ -206,15 +239,46 @@ function App() {
 
   const handleManualSync = () => {
     if (!online) {
-      showMessage('Pas de connexion pour synchroniser', 'warning');
+      showMessage('No connection to sync', 'warning');
       return;
     }
     syncPendingData();
+    triggerManualSync();
+  };
+
+  const showNotification = (title: string, body: string) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, {
+        body: body,
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        tag: 'app-notification',
+      });
+    }
+  };
+
+  const handleEnableNotifications = async () => {
+    const granted = await requestNotificationPermission();
+    if (granted) {
+      showMessage('Notifications enabled', 'success');
+      setShowNotificationRequest(false);
+    } else {
+      showMessage('Notifications not enabled', 'warning');
+    }
+  };
+
+  const handleMergeData = async () => {
+    try {
+      await DataManager.mergeServerData();
+      await loadData();
+      showMessage('Data merged with server', 'success');
+    } catch (error) {
+      showMessage('Error merging data', 'error');
+    }
   };
 
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 4 }}>
-      {/* En-tête avec statut de connexion */}
       <Paper elevation={2} sx={{ p: 3, mb: 3, bgcolor: online ? '#e8f5e9' : '#ffebee' }}>
         <Box display="flex" justifyContent="space-between" alignItems="center">
           <Box>
@@ -224,36 +288,67 @@ function App() {
             <Box display="flex" alignItems="center" gap={1}>
               <Chip
                 icon={online ? <CloudDoneIcon /> : <CloudOffIcon />}
-                label={online ? 'En ligne' : 'Hors ligne'}
+                label={online ? 'Online' : 'Offline'}
                 color={online ? 'success' : 'error'}
                 variant="outlined"
               />
+              {pendingSync && (
+                <Tooltip title={`${pendingSyncCount} items pending sync`}>
+                  <Chip
+                    icon={<SyncProblemIcon />}
+                    label="Pending sync"
+                    color="warning"
+                    variant="outlined"
+                  />
+                </Tooltip>
+              )}
               {lastChecked && (
                 <Typography variant="caption" color="text.secondary">
-                  Dernière vérification: {new Date(lastChecked).toLocaleTimeString()}
+                  Last check: {new Date(lastChecked).toLocaleTimeString()}
                 </Typography>
               )}
             </Box>
           </Box>
 
-          <Button
-            variant="contained"
-            startIcon={<SyncIcon />}
-            onClick={handleManualSync}
-            disabled={isSyncing || !online}
-          >
-            {isSyncing ? <CircularProgress size={24} /> : 'Synchroniser'}
-          </Button>
+          <Box display="flex" gap={1}>
+            <Button
+              variant="contained"
+              startIcon={<SyncIcon />}
+              onClick={handleManualSync}
+              disabled={isSyncing || !online}
+            >
+              {isSyncing ? <CircularProgress size={24} /> : 'Sync'}
+            </Button>
+          </Box>
         </Box>
       </Paper>
 
-      {/* Formulaire de message */}
+      {showNotificationRequest && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          <AlertTitle>Enable notifications</AlertTitle>
+          Get notified when sync completes
+          <Button size="small" onClick={handleEnableNotifications} sx={{ ml: 2 }}>
+            Enable
+          </Button>
+        </Alert>
+      )}
+
+      {pendingSync && online && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <AlertTitle>Pending synchronization</AlertTitle>
+          {pendingSyncCount} items waiting to sync with server
+          <Button size="small" onClick={handleManualSync} sx={{ ml: 2 }}>
+            Sync now
+          </Button>
+        </Alert>
+      )}
+
       <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
         <Typography variant="h6" gutterBottom>
-          Ajouter un message
+          Add a message
         </Typography>
         <TextField
-          label="Votre message"
+          label="Your message"
           fullWidth
           multiline
           rows={3}
@@ -267,14 +362,13 @@ function App() {
           disabled={isSaving || !text.trim()}
           fullWidth
         >
-          {isSaving ? <CircularProgress size={24} /> : 'Sauvegarder le message'}
+          {isSaving ? <CircularProgress size={24} /> : 'Save message'}
         </Button>
       </Paper>
 
-      {/* Upload de PDF */}
       <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
         <Typography variant="h6" gutterBottom>
-          Téléverser un PDF
+          Upload PDF
         </Typography>
 
         <input
@@ -294,7 +388,7 @@ function App() {
             fullWidth
             sx={{ mb: 2 }}
           >
-            Sélectionner un fichier PDF
+            Select PDF file
           </Button>
         </label>
 
@@ -332,33 +426,36 @@ function App() {
           fullWidth
           color="secondary"
         >
-          {isSaving ? <CircularProgress size={24} /> : 'Téléverser le PDF'}
+          {isSaving ? <CircularProgress size={24} /> : 'Upload PDF'}
         </Button>
 
         <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-          {online
-            ? 'Le PDF sera téléversé sur le serveur'
-            : 'Le PDF sera sauvegardé localement et synchronisé plus tard'}
+          {online ? 'PDF will be uploaded to server' : 'PDF will be saved locally and synced later'}
         </Typography>
       </Paper>
 
-      {/* Liste des messages */}
       <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
-        <Typography variant="h6" gutterBottom>
-          Messages ({messages.length})
-        </Typography>
+        <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+          <Typography variant="h6">Messages ({messages.length})</Typography>
+          <Button size="small" onClick={handleMergeData} disabled={!online}>
+            Merge with server
+          </Button>
+        </Box>
         <List>
           {messages.map((message) => (
             <ListItem
               key={message.id}
               divider
               secondaryAction={
-                <Chip
-                  size="small"
-                  label={message.uploaded ? 'En ligne' : 'Local'}
-                  color={message.uploaded ? 'success' : 'default'}
-                  variant="outlined"
-                />
+                <Box display="flex" alignItems="center" gap={1}>
+                  <Chip
+                    size="small"
+                    label={message.uploaded ? 'Online' : 'Local'}
+                    color={message.uploaded ? 'success' : 'default'}
+                    variant="outlined"
+                  />
+                  {!message.uploaded && !online && <WarningIcon color="warning" fontSize="small" />}
+                </Box>
               }
             >
               <ListItemText
@@ -369,16 +466,15 @@ function App() {
           ))}
           {messages.length === 0 && (
             <ListItem>
-              <ListItemText primary="Aucun message" secondary="Commencez par ajouter un message" />
+              <ListItemText primary="No messages" secondary="Start by adding a message" />
             </ListItem>
           )}
         </List>
       </Paper>
 
-      {/* Liste des PDFs */}
       <Paper elevation={2} sx={{ p: 3 }}>
         <Typography variant="h6" gutterBottom>
-          Fichiers PDF ({pdfs.length})
+          PDF Files ({pdfs.length})
         </Typography>
         <List>
           {pdfs.map((pdf) => (
@@ -389,7 +485,7 @@ function App() {
                 <Box display="flex" alignItems="center" gap={1}>
                   <Chip
                     size="small"
-                    label={pdf.uploaded ? 'En ligne' : 'Local'}
+                    label={pdf.uploaded ? 'Online' : 'Local'}
                     color={pdf.uploaded ? 'success' : 'default'}
                     variant="outlined"
                   />
@@ -410,6 +506,7 @@ function App() {
                     <br />
                     <Typography component="span" variant="caption">
                       {(pdf.size / 1024).toFixed(2)} KB
+                      {!pdf.uploaded && !online && ' (Offline)'}
                     </Typography>
                   </>
                 }
@@ -418,13 +515,12 @@ function App() {
           ))}
           {pdfs.length === 0 && (
             <ListItem>
-              <ListItemText primary="Aucun PDF" secondary="Téléversez votre premier fichier PDF" />
+              <ListItemText primary="No PDFs" secondary="Upload your first PDF file" />
             </ListItem>
           )}
         </List>
       </Paper>
 
-      {/* Snackbar pour les notifications */}
       <Snackbar
         open={openSnackbar}
         autoHideDuration={6000}
@@ -440,18 +536,50 @@ function App() {
         </Alert>
       </Snackbar>
 
-      {/* Instructions */}
+      <Dialog open={openConflictDialog} onClose={() => setOpenConflictDialog(false)}>
+        <DialogTitle>Conflict Resolution</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            A conflict was detected between local and server data. Choose how to resolve it:
+          </DialogContentText>
+          <FormControl component="fieldset" sx={{ mt: 2 }}>
+            <FormLabel component="legend">Resolution Strategy</FormLabel>
+            <RadioGroup
+              value={conflictStrategy}
+              onChange={(e) => setConflictStrategy(e.target.value as 'server-wins' | 'client-wins')}
+            >
+              <FormControlLabel
+                value="server-wins"
+                control={<Radio />}
+                label="Server wins (use server version)"
+              />
+              <FormControlLabel
+                value="client-wins"
+                control={<Radio />}
+                label="Client wins (use local version)"
+              />
+            </RadioGroup>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenConflictDialog(false)}>Cancel</Button>
+          <Button onClick={() => setOpenConflictDialog(false)} variant="contained">
+            Apply
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Paper elevation={0} sx={{ p: 2, mt: 3, bgcolor: '#f5f5f5' }}>
         <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-          Comment ça marche:
+          How it works:
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          • <strong>En ligne:</strong> Les données sont sauvegardées directement sur le serveur
-          <br />• <strong>Hors ligne:</strong> Les données sont stockées localement dans le
-          navigateur
-          <br />• <strong>Synchronisation:</strong> Les données locales sont automatiquement
-          envoyées au serveur lors du retour en ligne
-          <br />• Essayez de couper votre connexion internet pour tester le mode hors ligne
+          • <strong>Online:</strong> Data saved directly to server
+          <br />• <strong>Offline:</strong> Data stored locally in browser
+          <br />• <strong>Background Sync:</strong> Local data automatically sent to server when
+          back online
+          <br />• <strong>Notifications:</strong> Get notified when sync completes
+          <br />• Try disconnecting internet to test offline mode
         </Typography>
       </Paper>
     </Container>

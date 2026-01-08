@@ -17,7 +17,6 @@ export interface StoredMessage {
   uploaded: boolean;
 }
 
-// Gestion des fichiers PDF
 export const savePDFToLocal = async (file: File): Promise<StoredPDF> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -58,7 +57,6 @@ export const markPDFAsUploaded = (id: string): void => {
   localStorage.setItem(PDF_STORAGE_KEY, JSON.stringify(updated));
 };
 
-// Gestion des messages
 export const saveMessageToLocal = (msg: string): StoredMessage => {
   const message: StoredMessage = {
     id: Date.now().toString(),
@@ -88,4 +86,33 @@ export const markMessageAsUploaded = (id: string): void => {
   const messages = getMessagesFromLocal();
   const updated = messages.map((msg) => (msg.id === id ? { ...msg, uploaded: true } : msg));
   localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(updated));
+};
+
+export const getPendingMessages = (): StoredMessage[] => {
+  return getMessagesFromLocal().filter((msg) => !msg.uploaded);
+};
+
+export const getPendingPDFs = (): StoredPDF[] => {
+  return getPDFsFromLocal().filter((pdf) => !pdf.uploaded);
+};
+
+export const getSyncStats = () => {
+  const pendingMessages = getPendingMessages();
+  const pendingPDFs = getPendingPDFs();
+
+  return {
+    pendingMessages: pendingMessages.length,
+    pendingPDFs: pendingPDFs.length,
+    totalPending: pendingMessages.length + pendingPDFs.length,
+    lastSyncAttempt: localStorage.getItem('last-sync-attempt') || null,
+    lastSuccessfulSync: localStorage.getItem('last-successful-sync') || null,
+  };
+};
+
+export const updateLastSyncTime = (successful: boolean) => {
+  const now = new Date().toISOString();
+  if (successful) {
+    localStorage.setItem('last-successful-sync', now);
+  }
+  localStorage.setItem('last-sync-attempt', now);
 };

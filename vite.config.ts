@@ -9,9 +9,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'offline.html'],
       injectRegister: 'auto',
-      strategies: 'injectManifest', // generateSW, injectManifest
-      // srcDir: 'src',
-      // filename: 'sw.ts',
+      strategies: 'generateSW',
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2,json}'],
         runtimeCaching: [
@@ -42,6 +40,14 @@ export default defineConfig({
                 maxEntries: 50,
                 maxAgeSeconds: 60 * 60 * 24 * 30,
               },
+            },
+          },
+          {
+            urlPattern: /^http:\/\/localhost:3000\/api\/.*/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              networkTimeoutSeconds: 10,
             },
           },
         ],
