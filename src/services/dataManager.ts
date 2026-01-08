@@ -20,32 +20,42 @@ import {
 } from './api';
 
 export class DataManager {
-  // Enregistrer un message selon l'état de connexion
   static async saveMessage(text: string): Promise<{ local: StoredMessage; online: boolean }> {
     const isOnline = await checkConnection();
 
     if (isOnline) {
-      // Sauvegarder en ligne
-      const messageData: MessageData = {
-        msg: text,
-        date: new Date().toISOString(),
-      };
+      try {
+        const messageData: MessageData = {
+          msg: text,
+          date: new Date().toISOString(),
+        };
 
-      const onlineMessage = await saveMessageToAPI(messageData);
+        const onlineMessage = await saveMessageToAPI(messageData);
 
-      return {
-        local: {
+        const localMessage: StoredMessage = {
           id: onlineMessage.id || Date.now().toString(),
           msg: onlineMessage.msg,
           date: onlineMessage.date,
           uploaded: true,
-        },
-        online: true,
-      };
-    } else {
-      // Sauvegarder localement
-      const localMessage = saveMessageToLocal(text);
+        };
 
+        saveMessageToLocal(text);
+        markMessageAsUploaded(localMessage.id);
+
+        return {
+          local: localMessage,
+          online: true,
+        };
+      } catch (error) {
+        console.error('Failed to save message online, saving locally:', error);
+        const localMessage = saveMessageToLocal(text);
+        return {
+          local: localMessage,
+          online: false,
+        };
+      }
+    } else {
+      const localMessage = saveMessageToLocal(text);
       return {
         local: localMessage,
         online: false,
@@ -53,14 +63,12 @@ export class DataManager {
     }
   }
 
-  // Enregistrer un PDF selon l'état de connexion
   static async savePDF(file: File): Promise<{ local: StoredPDF; online: boolean }> {
     const isOnline = await checkConnection();
     const localPDF = await savePDFToLocal(file);
 
     if (isOnline) {
       try {
-        // Convertir File en base64
         const dataUrl = await new Promise<string>((resolve) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result as string);
@@ -70,7 +78,7 @@ export class DataManager {
         const pdfData: PDFData = {
           name: file.name,
           size: file.size,
-          data: dataUrl.split(',')[1], // Retirer le préfixe data:application/pdf;base64,
+          data: dataUrl.split(',')[1],
           timestamp: new Date().toISOString(),
         };
 
@@ -82,7 +90,7 @@ export class DataManager {
           online: true,
         };
       } catch (error) {
-        console.error('Failed to upload PDF online, keeping local only:', error);
+        console.error('Failed to upload PDF online, keeping local:', error);
         return {
           local: localPDF,
           online: false,
@@ -96,7 +104,6 @@ export class DataManager {
     };
   }
 
-  // Récupérer les messages selon l'état de connexion
   static async getMessages(): Promise<{
     messages: StoredMessage[];
     source: 'local' | 'api' | 'mixed';
@@ -107,7 +114,6 @@ export class DataManager {
       try {
         const apiMessages = await getMessagesFromAPI();
 
-        // Convertir les messages API au format local
         const convertedMessages: StoredMessage[] = apiMessages.map((msg) => ({
           id: msg.id || Date.now().toString(),
           msg: msg.msg,
@@ -115,9 +121,14 @@ export class DataManager {
           uploaded: true,
         }));
 
+        const localMessages = getMessagesFromLocal();
+        const pendingMessages = localMessages.filter((msg) => !msg.uploaded);
+
+        const allMessages = [...convertedMessages, ...pendingMessages];
+
         return {
-          messages: convertedMessages,
-          source: 'api',
+          messages: allMessages,
+          source: pendingMessages.length > 0 ? 'mixed' : 'api',
         };
       } catch (error) {
         console.error('Failed to fetch from API, using local:', error);
@@ -134,7 +145,6 @@ export class DataManager {
     }
   }
 
-  // Récupérer les PDFs selon l'état de connexion
   static async getPDFs(): Promise<{ pdfs: StoredPDF[]; source: 'local' | 'api' | 'mixed' }> {
     const isOnline = await checkConnection();
 
@@ -142,7 +152,6 @@ export class DataManager {
       try {
         const apiPDFs = await getPDFsFromAPI();
 
-        // Convertir les PDFs API au format local
         const convertedPDFs: StoredPDF[] = apiPDFs.map((pdf) => ({
           id: pdf.id || Date.now().toString(),
           name: pdf.name,
@@ -152,9 +161,14 @@ export class DataManager {
           uploaded: true,
         }));
 
+        const localPDFs = getPDFsFromLocal();
+        const pendingPDFs = localPDFs.filter((pdf) => !pdf.uploaded);
+
+        const allPDFs = [...convertedPDFs, ...pendingPDFs];
+
         return {
-          pdfs: convertedPDFs,
-          source: 'api',
+          pdfs: allPDFs,
+          source: pendingPDFs.length > 0 ? 'mixed' : 'api',
         };
       } catch (error) {
         console.error('Failed to fetch PDFs from API, using local:', error);
@@ -171,7 +185,6 @@ export class DataManager {
     }
   }
 
-  // Synchroniser les données locales non uploadées
   static async syncPendingData(): Promise<{
     messagesSynced: number;
     pdfsSynced: number;
@@ -186,7 +199,6 @@ export class DataManager {
     let messagesSynced = 0;
     let pdfsSynced = 0;
 
-    // Synchroniser les messages non uploadés
     const localMessages = getMessagesFromLocal();
     const pendingMessages = localMessages.filter((msg) => !msg.uploaded);
 
@@ -205,7 +217,6 @@ export class DataManager {
       }
     }
 
-    // Synchroniser les PDFs non uploadés
     const localPDFs = getPDFsFromLocal();
     const pendingPDFs = localPDFs.filter((pdf) => !pdf.uploaded);
 
@@ -228,5 +239,50 @@ export class DataManager {
     }
 
     return { messagesSynced, pdfsSynced, errors };
+  }
+
+  static async mergeServerData(): Promise<void> {
+    const isOnline = await checkConnection();
+
+    if (isOnline) {
+      try {
+        const [apiMessages, apiPDFs] = await Promise.all([getMessagesFromAPI(), getPDFsFromAPI()]);
+
+        const localMessages = getMessagesFromLocal();
+        const localPDFs = getPDFsFromLocal();
+
+        const serverMessageIds = new Set(apiMessages.map((m) => m.id));
+        const serverPDFIds = new Set(apiPDFs.map((p) => p.id));
+
+        const mergedMessages = [
+          ...apiMessages.map((msg) => ({
+            id: msg.id || '',
+            msg: msg.msg,
+            date: msg.date,
+            uploaded: true,
+          })),
+          ...localMessages.filter((msg) => !msg.uploaded && !serverMessageIds.has(msg.id)),
+        ];
+
+        const mergedPDFs = [
+          ...apiPDFs.map((pdf) => ({
+            id: pdf.id || '',
+            name: pdf.name,
+            size: pdf.size,
+            dataUrl: `data:application/pdf;base64,${pdf.data}`,
+            timestamp: pdf.timestamp,
+            uploaded: true,
+          })),
+          ...localPDFs.filter((pdf) => !pdf.uploaded && !serverPDFIds.has(pdf.id)),
+        ];
+
+        localStorage.setItem('messages', JSON.stringify(mergedMessages));
+        localStorage.setItem('pdf_files', JSON.stringify(mergedPDFs));
+
+        console.log('[DataManager] Data merged successfully');
+      } catch (error) {
+        console.error('[DataManager] Merge failed:', error);
+      }
+    }
   }
 }

@@ -10,11 +10,10 @@ export interface PDFData {
   id?: string;
   name: string;
   size: number;
-  data: string; // base64
+  data: string;
   timestamp: string;
 }
 
-// API pour les messages
 export const saveMessageToAPI = async (message: MessageData): Promise<MessageData> => {
   const response = await fetch(`${API_BASE_URL}/messages`, {
     method: 'POST',
@@ -41,7 +40,6 @@ export const getMessagesFromAPI = async (): Promise<MessageData[]> => {
   return response.json();
 };
 
-// API pour les fichiers PDF
 export const uploadPDFToAPI = async (pdfData: PDFData): Promise<PDFData> => {
   const response = await fetch(`${API_BASE_URL}/pdfs`, {
     method: 'POST',
@@ -83,7 +81,27 @@ export const checkConnection = async (): Promise<boolean> => {
     return response.ok;
   } catch (error) {
     clearTimeout(timeoutId);
-    console.warn('Connexion non disponible:', error);
+    console.warn('Connection not available:', error);
     return false;
   }
+};
+
+export const getMessageFromAPI = async (id: string): Promise<MessageData> => {
+  const response = await fetch(`${API_BASE_URL}/messages/${id}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch message from API');
+  }
+
+  return response.json();
+};
+
+export const getPDFFromAPI = async (id: string): Promise<PDFData> => {
+  const response = await fetch(`${API_BASE_URL}/pdfs/${id}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch PDF from API');
+  }
+
+  return response.json();
 };
